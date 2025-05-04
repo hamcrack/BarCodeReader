@@ -65,11 +65,30 @@ def get_line_stats(lines, image):
 
     return line_stats, angle_length_id_map, lines_in_angle_bins
 
-def get_barcodes(image):
+def get_barcode_lines(image):
+    barcode_lines = []
     lsd = cv2.createLineSegmentDetector(0)
     cv_lines = lsd.detect(image)[0]
     line_stats, angle_length_bins, lines_in_angle_bins = get_line_stats(cv_lines, image)
-    return cv_lines, line_stats, angle_length_bins, lines_in_angle_bins
+
+    most_seen_angs = max(lines_in_angle_bins, key=lambda key: lines_in_angle_bins[key])
+    no_angle_lines = lines_in_angle_bins[most_seen_angs]
+    print("Most seen angle:", most_seen_angs, "lines_in_angle_bins[most_seen_angs]:", no_angle_lines)
+    most_seen_lens = max(angle_length_bins[most_seen_angs], key=lambda key: len(angle_length_bins[most_seen_angs][key]))
+    no_len_lines = len(angle_length_bins[most_seen_angs][most_seen_lens])
+    print("Most seen length:", most_seen_lens, "lines_in_angle_bins[most_seen_angs][most_seen_lens]:", no_len_lines)
+    for index in angle_length_bins[most_seen_angs][most_seen_lens]:
+        barcode_lines.append(cv_lines[index])
+        
+    for angle, length_bins in angle_length_bins.items():
+        if lines_in_angle_bins[angle] > lines_in_angle_bins[most_seen_angs] / 2 and angle != most_seen_angs:
+            print("Also check angle ", angle)
+        for length, indices in length_bins.items():
+            if len(indices) > no_len_lines / 3 and length != most_seen_lens:
+                print("Also check len ", length)
+                for index in indices:
+                    barcode_lines.append(cv_lines[index])
+    return barcode_lines
 
 
 def detect_barcodes(image):
@@ -85,63 +104,51 @@ def detect_barcodes(image):
               Returns an empty list if no barcodes are found.
               Example: [((x1, y1), (x2, y2), (x3, y3), (x4, y4)), ...]
     """
-    try:
-        # Convert the image to grayscale
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # Convert the image to grayscale
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        # Use OpenCV's barcode detector
-        barcode_detector = cv2.barcode_BarcodeDetector()
+    # Use OpenCV's barcode detector
+    barcode_detector = cv2.barcode_BarcodeDetector()
 
-        # Detect barcodes using pyzbar
-        barcodes = decode(gray)
-        print(f"Detected {len(barcodes)} barcodes using pyzbar:", barcodes)
+    # Detect barcodes using pyzbar
+    barcodes = decode(gray)
+    print(f"Detected {len(barcodes)} barcodes using pyzbar:", barcodes)
 
-        # My barcode detection
-        cv_lines, line_stats, angle_length_bins, lines_in_angle_bins = get_barcodes(gray)
+    # My barcode detection
+    barcode_lines = get_barcode_lines(gray)
+    line_centers = []
+    line_associations = {i: [] for i in range(180)}
+    print("line", line_associations)
+    
+    for i, line in enumerate(barcode_lines):
+        x1, y1, x2, y2 = line[0]
+        center_point = (int((x1 + x2) / 2), int((y1 + y2) / 2))
+        for j, point in enumerate(line_centers):
+            distance = math.sqrt(math.pow(center_point[0] - point[0], 2) + math.pow(center_point[1] - point[1], 2))
+            angle_rad = math.degrees(math.atan2(center_point[1] - point[1], center_point[0] - point[0]))
+            angle_deg = math.degrees(angle_rad)
+            int_norm_angle = int(angle_deg % 180)
+            line_associations[int_norm_angle].append(i)
+            line_associations[int_norm_angle].append(j)
+            
+        line_centers.append(center_point)
+        cv2.line(image, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
+        cv2.circle(image, (line_centers[-1][0], line_centers[-1][1]), 5, (255, 0, 0), -1)
 
-        barcode_lines = []
+    for i, associations in line_associations.items():
+        print(i, " = ", len(associations))
+    most_seen_angs = max(line_associations, key=lambda key: len(line_associations[key]))
+    print("Most seen angle:", most_seen_angs, "line_associations[most_seen_angs]:", line_associations[most_seen_angs])
+    
+    # Detect the barcodes
+    retv, barcode_corners = barcode_detector.detect(gray)
+    if not retv:
+        print("No barcodes detected.")
+        return []  # Return an empty list if no barcodes are found
+    else:
+        print(f"Detected {len(barcode_corners)} barcodes using cv:", barcode_corners)
 
-        most_seen_angs = max(lines_in_angle_bins, key=lambda key: lines_in_angle_bins[key])
-        no_angle_lines = lines_in_angle_bins[most_seen_angs]
-        print("Most seen angle:", most_seen_angs, "lines_in_angle_bins[most_seen_angs]:", no_angle_lines)
-        most_seen_lens = max(angle_length_bins[most_seen_angs], key=lambda key: len(angle_length_bins[most_seen_angs][key]))
-        no_len_lines = len(angle_length_bins[most_seen_angs][most_seen_lens])
-        print("Most seen length:", most_seen_lens, "lines_in_angle_bins[most_seen_angs][most_seen_lens]:", no_len_lines)
-        for index in angle_length_bins[most_seen_angs][most_seen_lens]:
-            barcode_lines.append(index)
-            # x1, y1, x2, y2 = cv_lines[index][0]
-            # cv2.line(image, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
-
-        for angle, length_bins in angle_length_bins.items():
-            new_angle = False
-            if lines_in_angle_bins[angle] > lines_in_angle_bins[most_seen_angs] / 2 and angle != most_seen_angs:
-                print("Also check angle ", angle)
-            for length, indices in length_bins.items():
-                if len(indices) > no_len_lines / 3 and length != most_seen_lens:
-                    print("Also check len ", length)
-                    for index in indices:
-                        barcode_lines.append(index)
-                        # x1, y1, x2, y2 = cv_lines[index][0]
-                        # cv2.line(image, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
-
-        for index in barcode_lines:
-            x1, y1, x2, y2 = cv_lines[index][0]
-            cv2.line(image, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
-
-        
-        # Detect the barcodes
-        retv, barcode_corners = barcode_detector.detect(gray)
-        if not retv:
-            print("No barcodes detected.")
-            return []  # Return an empty list if no barcodes are found
-        else:
-            print(f"Detected {len(barcode_corners)} barcodes using cv:", barcode_corners)
-
-        return barcode_corners
-
-    except Exception as e:
-        print(f"An error occurred during barcode detection: {e}")
-        return []  # Return an empty list in case of an error
+    return barcode_corners
 
 def display_and_resize_images(folder_path, output_folder="out"):
     """
