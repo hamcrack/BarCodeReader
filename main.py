@@ -55,14 +55,10 @@ def get_line_stats(lines, image):
             angle_length_id_map[normalized_angle] = {length: [index]}
 
     lines_in_angle_bins = {}
-    print("Angle bins:")
     for angle, length_bins in angle_length_id_map.items():
         lines_in_angle_bins[angle] = 0
-        print(f"Angle: {angle:.2f}°")
         for length, indices in length_bins.items():
             lines_in_angle_bins[angle] += len(indices)
-            print(f"Length: {length:.2f} - Indices length: {len(indices)}")
-        print("      lines_in_angle_bins[angle]:", lines_in_angle_bins[angle])
 
     return line_stats, angle_length_id_map, lines_in_angle_bins
 
@@ -74,19 +70,14 @@ def get_barcode_lines(image):
 
     most_seen_angs = max(lines_in_angle_bins, key=lambda key: lines_in_angle_bins[key])
     no_angle_lines = lines_in_angle_bins[most_seen_angs]
-    print("Most seen angle:", most_seen_angs, "lines_in_angle_bins[most_seen_angs]:", no_angle_lines)
     most_seen_lens = max(angle_length_bins[most_seen_angs], key=lambda key: len(angle_length_bins[most_seen_angs][key]))
     no_len_lines = len(angle_length_bins[most_seen_angs][most_seen_lens])
-    print("Most seen length:", most_seen_lens, "lines_in_angle_bins[most_seen_angs][most_seen_lens]:", no_len_lines)
     for index in angle_length_bins[most_seen_angs][most_seen_lens]:
         barcode_lines.append(cv_lines[index])
         
     for angle, length_bins in angle_length_bins.items():
-        if lines_in_angle_bins[angle] > lines_in_angle_bins[most_seen_angs] / 2 and angle != most_seen_angs:
-            print("Also check angle ", angle)
         for length, indices in length_bins.items():
             if len(indices) > no_len_lines / 3 and length != most_seen_lens:
-                print("Also check len ", length)
                 for index in indices:
                     barcode_lines.append(cv_lines[index])
     return barcode_lines
@@ -269,10 +260,8 @@ def get_barcode_boxes(gray):
     boxes = []
     for group in grouped_points:
         if len(group) > 20:
-            print("Group size:", len(group))  
             points = []
             ends = find_furthest_points(group)
-            print("Furthest points:", ends)
             for end in ends:
                 corners_rotated = get_oriented_box_coordinates(end)
                 points.append(corners_rotated)
@@ -303,44 +292,87 @@ def get_barcode_boxes(gray):
 
 
 def detect_barcodes(image):
-    """
-    Detects barcodes in an image using OpenCV and returns the pixel coordinates of the corners.
-
-    Args:
-        image (numpy.ndarray): The input image (OpenCV format).
-
-    Returns:
-        list: A list of tuples, where each tuple contains the four corner points
-              of a detected barcode in pixel coordinates.
-              Returns an empty list if no barcodes are found.
-              Example: [((x1, y1), (x2, y2), (x3, y3), (x4, y4)), ...]
-    """
-    # Convert the image to grayscale
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
+    # ------------------------------------------------------------------------
     # Use OpenCV's barcode detector
+    # ------------------------------------------------------------------------
     barcode_detector = cv2.barcode_BarcodeDetector()
 
-    # Detect barcodes using pyzbar
-    barcodes = decode(gray)
-    print(f"Detected {len(barcodes)} barcodes using pyzbar:", barcodes)
+    retv, barcode_corners = barcode_detector.detect(gray)
+    if not retv:
+        print(f"    OpenCV detected 0 barcodes...")
+    else:
+        print(f"    OpenCV detected {len(barcode_corners)} barcodes...")
 
-    # My barcode detection
+        for corners in barcode_corners:
+            # Convert the corner points to integers for drawing
+            corners = [(int(x), int(y)) for x, y in corners]
+            for j in range(4):
+                cv2.line(image, corners[j], corners[(j + 1) % 4], (0, 255, 0), 2)  # Green lines
+
+    # ------------------------------------------------------------------------
+    # Detect barcodes using pyzbar  
+    # ------------------------------------------------------------------------
+    pyzbarcodes = decode(gray)
+    print(f"    Pyzbar detected {len(pyzbarcodes)} barcodes...")
+    
+    for barcode in pyzbarcodes:
+        # Extract barcode data and type
+        barcode_data = barcode.data.decode("utf-8")
+        barcode_type = barcode.type
+
+        # Print barcode data and type
+        print("     Barcode Data:", barcode_data)
+        print("     Barcode Type:", barcode_type)
+
+        # Draw a rectangle around the barcode
+        (x, y, w, h) = barcode.rect
+        cv2.rectangle(image, (x, y), (x + w, y + h), (255, 0, 0), 2)
+
+        # Put barcode data and type on the image
+        cv2.putText(image, f"{barcode_data} ({barcode_type})",
+                    (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)  # Blue lines
+
+    # ------------------------------------------------------------------------
+    # My barcode detector
+    # ------------------------------------------------------------------------
     boxes = get_barcode_boxes(gray)
+    print("    I detected", len(boxes),  "barcodes...")
+    box_no = 0
     for box in boxes:
         for i in range(len(box)):
             cv2.line(image, (int(box[i][0]), int(box[i][1])), (int(box[i - 1][0]), int(box[i - 1][1])), (0, 0, 255), 2)
-    
-    
-    # Detect the barcodes
-    retv, barcode_corners = barcode_detector.detect(gray)
-    if not retv:
-        print("No barcodes detected.")
-        return []  # Return an empty list if no barcodes are found
-    else:
-        print(f"Detected {len(barcode_corners)} barcodes using cv:", barcode_corners)
 
-    return barcode_corners
+        bar_height = int(math.sqrt(math.pow(box[3][0] - box[0][0], 2) + math.pow(box[3][1] - box[0][1], 2)) + (math.sqrt(math.pow(box[2][0] - box[1][0], 2) + math.pow(box[2][1] - box[1][1], 2))) / 2)
+        bar_width = int(math.sqrt(math.pow(box[1][0] - box[0][0], 2) + math.pow(box[1][1] - box[0][1], 2)) + (math.sqrt(math.pow(box[2][0] - box[3][0], 2) + math.pow(box[2][1] - box[3][1], 2))) / 2)
+
+        aligned_points = np.array([[0, 0], [bar_width, 0], [bar_width, bar_height], [0, bar_height]])
+
+        x_values = [point[0] for point in box]
+        y_values = [point[1] for point in box]
+
+        min_x = int(min(x_values))
+        max_x = int(max(x_values))
+        min_y = int(min(y_values))
+        max_y = int(max(y_values))
+
+        cut_box = np.zeros((4, 2))
+        for i, point in enumerate(box):
+            cut_box[i] = [point[0]-min_x, point[1]-min_y]
+
+        cut_gray = gray[min_y:max_y, min_x:max_x]
+        M, status = cv2.findHomography(cut_box, aligned_points)
+
+        cut_gray = cv2.warpPerspective(cut_gray, M, (bar_width, bar_height))
+        crop = 10
+        alighed_barcode = cut_gray[crop:bar_height - crop, crop:bar_width - crop]
+        (thresh, alighed_barcode) = cv2.threshold(alighed_barcode, 10, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        cv2.imshow("alighed_barcode" + str(box_no), alighed_barcode)
+        box_no += 1
+
+    return boxes
+
 
 def display_and_resize_images(folder_path, output_folder="out"):
     """
@@ -374,6 +406,8 @@ def display_and_resize_images(folder_path, output_folder="out"):
 
             # Read the image using OpenCV
             img = cv2.imread(image_path)
+
+            print("Processing image ", image_file)
 
             if img is None:
                 print(f"Error reading image: {image_path}")
@@ -414,12 +448,6 @@ def display_and_resize_images(folder_path, output_folder="out"):
             else:
                 # If the image is smaller than the screen, don't resize
                 new_width, new_height = original_width, original_height
-
-            for corners in barcode_corners_list:
-                # Convert the corner points to integers for drawing
-                corners = [(int(x), int(y)) for x, y in corners]
-                for j in range(4):
-                    cv2.line(img, corners[j], corners[(j + 1) % 4], (0, 255, 0), 2)  # Green lines
 
 
             # Resize the image
