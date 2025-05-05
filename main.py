@@ -186,6 +186,122 @@ def group_nearby_points(points_with_dist_angle, min_angle):
 
     return groups
 
+def find_furthest_points(group):
+    """Finds the two points in a group with the greatest Euclidean distance."""
+    if len(group) < 2:
+        point = group[0] if group else None
+        return point, point
+
+    furthest_dist_sq = 0
+    furthest_pair = [None, None]
+
+    for i in range(len(group)):
+        for j in range(i + 1, len(group)):
+            coords1 = group[i][0]
+            coords2 = group[j][0]
+            dist_sq = (coords1[0] - coords2[0])**2 + (coords1[1] - coords2[1])**2
+            if dist_sq > furthest_dist_sq:
+                furthest_dist_sq = dist_sq
+                furthest_pair = [group[i], group[j]]
+    return furthest_pair
+
+def get_oriented_box_coordinates(point):
+    """
+    Calculates the coordinates of the four corners of an oriented box.
+
+    Args:
+        center: A list or tuple representing the (x, y) coordinates of the box center.
+        half_len: Half the length of the box (used for both width and height).
+        angle_deg: The normalized angle of the box in degrees (counter-clockwise from the positive x-axis).
+
+    Returns:
+        A list of four (x, y) coordinate tuples representing the corners of the box,
+        starting from the top-left corner after rotation.
+    """
+    [center, half_len, angle_deg] = point
+    cx, cy = center
+    angle_rad = math.radians(-angle_deg)
+
+    # Define the corner offsets relative to the center before rotation
+    corners_local = [
+        (-half_len/1.5, half_len),  # Top-left
+        (half_len/1.5, half_len),   # Top-right
+        (half_len/1.5, -half_len),  # Bottom-right
+        (-half_len/1.5, -half_len)  # Bottom-left
+    ]
+
+    corners_rotated = []
+    for lx, ly in corners_local:
+        # Rotation matrix
+        cos_theta = math.cos(angle_rad)
+        sin_theta = math.sin(angle_rad)
+
+        # Rotate the corner coordinates
+        rx = cx + lx * cos_theta - ly * sin_theta
+        ry = cy + lx * sin_theta + ly * cos_theta
+        corners_rotated.append([rx, ry])
+    return corners_rotated
+
+def get_barcode_line_stats(barcode_lines):
+    line_centers = []
+    for i, line in enumerate(barcode_lines):
+        x1, y1, x2, y2 = line[0]
+        center_point = (int((x1 + x2) / 2), int((y1 + y2) / 2))
+
+        half_len = math.sqrt(math.pow(x1 - x2, 2) + math.pow(y1 - y2, 2)) / 2
+
+        opposite = (x1 - x2)
+        adjacent = (y1 - y2)
+        if adjacent == 0:
+            adjacent = 0.00001
+        angle_rad = math.atan(opposite / adjacent)
+        angle_deg = math.degrees(angle_rad)
+        normalized_angle = angle_deg % 180
+
+        line_centers.append([center_point, half_len, normalized_angle])
+        # cv2.line(image, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
+    return line_centers
+
+def get_barcode_boxes(gray):
+    barcode_lines = get_barcode_lines(gray)
+    line_centers = get_barcode_line_stats(barcode_lines)
+    grouped_points = group_nearby_points(line_centers, 2)
+    boxes = []
+    for group in grouped_points:
+        if len(group) > 20:
+            print("Group size:", len(group))  
+            points = []
+            ends = find_furthest_points(group)
+            print("Furthest points:", ends)
+            for end in ends:
+                corners_rotated = get_oriented_box_coordinates(end)
+                points.append(corners_rotated)
+                # for i, corner in enumerate(corners_rotated):
+                #     cv2.line(image, (int(corner[0]), int(corner[1])), (int(corners_rotated[i - 1][0]), int(corners_rotated[i - 1][1])), (255, 255, 0), 2)
+
+            for i in range(2):
+                dists = []
+                for point in points[i]:
+                    dists.append(math.sqrt(math.pow(point[0] - ends[1-i][0][0], 2) + math.pow(point[1] - ends[1-i][0][1], 2)))
+                mnp = dists.index(min(dists))
+                points[i].pop(mnp)
+                dists.pop(mnp)
+                mnp = dists.index(min(dists))
+                points[i].pop(mnp)
+
+            if (points[0][0][0] + points[0][1][0]) / 2 > (points[1][0][0] + points[1][1][0]) / 2:
+                temp = points.pop(0)
+                points.append(temp)
+            
+            for side in points:
+                if side[0][1] > side[1][1]:
+                    temp = side.pop(0)
+                    side.append(temp)
+            box = [points[0][0], points[1][0], points[1][1], points[0][1]]
+            boxes.append(box)
+    return boxes
+
+
 def detect_barcodes(image):
     """
     Detects barcodes in an image using OpenCV and returns the pixel coordinates of the corners.
@@ -210,33 +326,11 @@ def detect_barcodes(image):
     print(f"Detected {len(barcodes)} barcodes using pyzbar:", barcodes)
 
     # My barcode detection
-    barcode_lines = get_barcode_lines(gray)
-    line_centers = []
+    boxes = get_barcode_boxes(gray)
+    for box in boxes:
+        for i in range(len(box)):
+            cv2.line(image, (int(box[i][0]), int(box[i][1])), (int(box[i - 1][0]), int(box[i - 1][1])), (0, 0, 255), 2)
     
-    for i, line in enumerate(barcode_lines):
-        x1, y1, x2, y2 = line[0]
-        center_point = (int((x1 + x2) / 2), int((y1 + y2) / 2))
-
-        max_dist = math.sqrt(math.pow(x1 - x2, 2) + math.pow(y1 - y2, 2)) / 2
-
-        opposite = (x1 - x2)
-        adjacent = (y1 - y2)
-        if adjacent == 0:
-            adjacent = 0.00001
-        angle_rad = math.atan(opposite / adjacent)
-        angle_deg = math.degrees(angle_rad)
-        normalized_angle = angle_deg % 180
-
-        line_centers.append([center_point, max_dist, normalized_angle])
-        cv2.line(image, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
-
-    grouped_points = group_nearby_points(line_centers, 2)
-    for group in grouped_points:
-        if len(group) > 20:
-            print("Group size:", len(group))    
-            colour = get_random_color()
-            for i, point in enumerate(group):
-                cv2.circle(image, (point[0][0], point[0][1]), 5, colour, -1)
     
     # Detect the barcodes
     retv, barcode_corners = barcode_detector.detect(gray)
