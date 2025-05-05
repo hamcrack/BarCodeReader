@@ -5,6 +5,7 @@ from pyzbar.pyzbar import decode
 import numpy as np
 import math
 from collections import defaultdict
+from collections import Counter
 
 def get_line_stats(lines, image):
     angle_threshold = 15
@@ -291,6 +292,152 @@ def get_barcode_boxes(gray):
     return boxes
 
 
+def get_gaps(row):
+    gap_widths = []
+    last = False
+    cnt = 0
+    for pix in row:
+        if bool(pix) != last:
+            last = not last
+            gap_widths.append(cnt)
+            cnt = 0
+        cnt += 1
+    gap_widths.pop(0)
+    gap_widths.pop(-1)
+
+    largest_gap = max(gap_widths)
+    smallest_gap = min(gap_widths) # largest_gap/4
+    middle_gap = smallest_gap + (largest_gap - smallest_gap)/2
+    return largest_gap, smallest_gap, middle_gap, gap_widths
+
+
+def decode_code128_binary_image(binary_image, encoding_type='128C'):
+    encodings_128A = {
+        '212222': ' ', '222122': '!', '222221': '"', '121223': '#', '121322': '$',
+        '131222': '%', '122213': '&', '122312': "'", '132212': '(', '221213': ')',
+        '221312': '*', '231212': '+', '112232': ',', '122132': '-', '122231': '.',
+        '113222': '/', '123122': '0', '123221': '1', '223211': '2', '221132': '3',
+        '221231': '4', '213212': '5', '223112': '6', '312131': '7', '311222': '8',
+        '321122': '9', '321221': ':', '312212': ';', '322112': '<', '322211': '=',
+        '212123': '>', '212321': '?', '232121': '@', '111323': 'A', '131123': 'B',
+        '131321': 'C', '112313': 'D', '132113': 'E', '132311': 'F', '211313': 'G',
+        '231113': 'H', '231311': 'I', '112133': 'J', '112331': 'K', '132131': 'L',
+        '113123': 'M', '113321': 'N', '133121': 'O', '313121': 'P', '211331': 'Q',
+        '231131': 'R', '213113': 'S', '213311': 'T', '213131': 'U', '311123': 'V',
+        '311321': 'W', '331121': 'X', '312113': 'Y', '312311': 'Z', '332111': '[',
+        '314111': '\\', '221411': ']', '431111': '^', '111224': '_', '111422': '\x00',
+        '121124': '\x01', '121421': '\x02', '141122': '\x03', '141221': '\x04',
+        '112214': '\x05', '112412': '\x06', '122114': '\x07', '122411': '\x08',
+        '142112': '\x09', '142211': '\x0A', '241211': '\x0B', '221114': '\x0C',
+        '413111': '\x0D', '241112': '\x0E', '134111': '\x0F', '111242': '\x10',
+        '121142': '\x11', '121241': '\x12', '114212': '\x13', '124112': '\x14',
+        '124211': '\x15', '411212': '\x16', '421112': '\x17', '421211': '\x18',
+        '212141': '\x19', '214121': '\x1A', '412121': '\x1B', '111143': '\x1C',
+        '111341': '\x1D', '131141': '\x1E', '114113': '\x1F', '114311': 'FNC 3',
+        '411113': 'FNC 2', '411311': 'Shift B', '113141': 'Code C', '114131': 'Code B',
+        '311141': 'FNC 4', '411131': 'FNC 1', '211412': 'Start A', '211214': 'Start B',
+        '211232': 'Start C', '2331112': 'Stop'
+    }
+
+    encodings_128B = {
+        '212222': ' ', '222122': '!', '222221': '"', '121223': '#', '121322': '$',
+        '131222': '%', '122213': '&', '122312': "'", '132212': '(', '221213': ')',
+        '221312': '*', '231212': '+', '112232': ',', '122132': '-', '122231': '.',
+        '113222': '/', '123122': '0', '123221': '1', '223211': '2', '221132': '3',
+        '221231': '4', '213212': '5', '223112': '6', '312131': '7', '311222': '8',
+        '321122': '9', '321221': ':', '312212': ';', '322112': '<', '322211': '=',
+        '212123': '>', '212321': '?', '232121': '@', '111323': 'A', '131123': 'B',
+        '131321': 'C', '112313': 'D', '132113': 'E', '132311': 'F', '211313': 'G',
+        '231113': 'H', '231311': 'I', '112133': 'J', '112331': 'K', '132131': 'L',
+        '113123': 'M', '113321': 'N', '133121': 'O', '313121': 'P', '211331': 'Q',
+        '231131': 'R', '213113': 'S', '213311': 'T', '213131': 'U', '311123': 'V',
+        '311321': 'W', '331121': 'X', '312113': 'Y', '312311': 'Z', '332111': '[',
+        '314111': '\\', '221411': ']', '431111': '^', '111224': '_', '111422': '`',
+        '121124': 'a', '121421': 'b', '141122': 'c', '141221': 'd', '112214': 'e',
+        '112412': 'f', '122114': 'g', '122411': 'h', '142112': 'i', '142211': 'j',
+        '241211': 'k', '221114': 'l', '413111': 'm', '241112': 'n', '134111': 'o',
+        '111242': 'p', '121142': 'q', '121241': 'r', '114212': 's', '124112': 't',
+        '124211': 'u', '411212': 'v', '421112': 'w', '421211': 'x', '212141': 'y',
+        '214121': 'z', '412121': '{', '111143': '|', '111341': '}', '131141': '~',
+        '114113': 'DEL', '114311': 'FNC 3', '411113': 'FNC 2', '411311': 'Shift A',
+        '113141': 'Code C', '114131': 'FNC 4', '311141': 'Code A', '411131': 'FNC 1',
+        '211412': 'Start A', '211214': 'Start B', '211232': 'Start C', '2331112': 'Stop'
+    }
+
+    encodings_128C = {
+        '212222': '00', '222122': '01', '222221': '02', '121223': '03', '121322': '04',
+        '131222': '05', '122213': '06', '122312': '07', '132212': '08', '221213': '09',
+        '221312': '10', '231212': '11', '112232': '12', '122132': '13', '122231': '14',
+        '113222': '15', '123122': '16', '123221': '17', '223211': '18', '221132': '19',
+        '221231': '20', '213212': '21', '223112': '22', '312131': '23', '311222': '24',
+        '321122': '25', '321221': '26', '312212': '27', '322112': '28', '322211': '29',
+        '212123': '30', '212321': '31', '232121': '32', '111323': '33', '131123': '34',
+        '131321': '35', '112313': '36', '132113': '37', '132311': '38', '211313': '39',
+        '231113': '40', '231311': '41', '112133': '42', '112331': '43', '132131': '44',
+        '113123': '45', '113321': '46', '133121': '47', '313121': '48', '211331': '49',
+        '231131': '50', '213113': '51', '213311': '52', '213131': '53', '311123': '54',
+        '311321': '55', '331121': '56', '312113': '57', '312311': '58', '332111': '59',
+        '314111': '60', '221411': '61', '431111': '62', '111224': '63', '111422': '64',
+        '121124': '65', '121421': '66', '141122': '67', '141221': '68', '112214': '69',
+        '112412': '70', '122114': '71', '122411': '72', '142112': '73', '142211': '74',
+        '241211': '75', '221114': '76', '413111': '77', '241112': '78', '134111': '79',
+        '111242': '80', '121142': '81', '121241': '82', '114212': '83', '124112': '84',
+        '124211': '85', '411212': '86', '421112': '87', '421211': '88', '212141': '89',
+        '214121': '90', '412121': '91', '111143': '92', '111341': '93', '131141': '94',
+        '114113': '95', '114311': '96', '411113': '97', '411311': '98', '113141': '99',
+        '114131': 'Code B', '311141': 'Code A', '411131': 'FNC 1',
+        '211412': 'Start A', '211214': 'Start B', '211232': 'Start C', '2331112': 'Stop'
+    }
+
+    encodings = {
+        '128A': encodings_128A,
+        '128B': encodings_128B,
+        '128C': encodings_128C
+    }
+    encoding_dict = encodings[encoding_type]
+
+    row_cnt = 0
+    print("Length:", len(binary_image))
+    for row in binary_image:
+        print("Row:", row_cnt)
+        row_cnt += 1
+        largest_gap, smallest_gap, middle_gap, widths = get_gaps(row)
+        print("gaps:", largest_gap, smallest_gap, middle_gap)
+        print("Widths", widths)
+
+        widths = []
+        last = False
+        cnt = 0
+        for pix in row:
+            if bool(pix) != last:
+                last = not last
+                if cnt >= middle_gap:
+                    large_dif = abs(largest_gap - cnt)
+                    middle_dif = abs(cnt - middle_gap)
+                    if large_dif > middle_dif:
+                        widths.append(4)
+                        # print("4 - Cnt:", cnt)
+                    else:
+                        widths.append(3)
+                        # print("3 - Cnt:", cnt)
+                else:
+                    small_dif = abs(cnt - smallest_gap)
+                    middle_dif = abs(middle_gap - cnt)
+                    if middle_dif > small_dif:
+                        # print("2 - Cnt:", cnt)
+                        widths.append(2)
+                    else:
+                        # print("1 - Cnt:", cnt)
+                        widths.append(1)
+                cnt = 0
+            cnt += 1
+        # widths.pop(0)
+        # widths.pop(-1)
+
+        print("width codes:", widths)
+
+    return "Nada"
+
 def detect_barcodes(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
@@ -299,17 +446,19 @@ def detect_barcodes(image):
     # ------------------------------------------------------------------------
     barcode_detector = cv2.barcode_BarcodeDetector()
 
-    retv, barcode_corners = barcode_detector.detect(gray)
-    if not retv:
-        print(f"    OpenCV detected 0 barcodes...")
-    else:
-        print(f"    OpenCV detected {len(barcode_corners)} barcodes...")
-
-        for corners in barcode_corners:
+    retval, decoded_info, points, straight_code = barcode_detector.detectAndDecodeMulti(gray)
+    if points is not None:
+        print(f"    OpenCV detected {len(points)} barcodes...")
+        for i, barcode_corners in enumerate(points):
             # Convert the corner points to integers for drawing
-            corners = [(int(x), int(y)) for x, y in corners]
+            corners = [(int(x), int(y)) for x, y in barcode_corners]
             for j in range(4):
                 cv2.line(image, corners[j], corners[(j + 1) % 4], (0, 255, 0), 2)  # Green lines
+            if decoded_info[i] == '':
+                text = 'Unknown'
+            else:
+                text = decoded_info[i]
+            cv2.putText(image, f"CV: {text}", (corners[0][0], corners[0][1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)  # Blue lines
 
     # ------------------------------------------------------------------------
     # Detect barcodes using pyzbar  
@@ -331,8 +480,8 @@ def detect_barcodes(image):
         cv2.rectangle(image, (x, y), (x + w, y + h), (255, 0, 0), 2)
 
         # Put barcode data and type on the image
-        cv2.putText(image, f"{barcode_data} ({barcode_type})",
-                    (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)  # Blue lines
+        cv2.putText(image, f"Pyzbar: {barcode_data} ({barcode_type})",
+                    (x - 300, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)  # Blue lines
 
     # ------------------------------------------------------------------------
     # My barcode detector
@@ -368,6 +517,10 @@ def detect_barcodes(image):
         crop = 10
         alighed_barcode = cut_gray[crop:bar_height - crop, crop:bar_width - crop]
         (thresh, alighed_barcode) = cv2.threshold(alighed_barcode, 10, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+
+        bar_data = decode_code128_binary_image(alighed_barcode)
+        print("My decode: ", bar_data)
+
         cv2.imshow("alighed_barcode" + str(box_no), alighed_barcode)
         box_no += 1
 
@@ -460,7 +613,6 @@ def display_and_resize_images(folder_path, output_folder="out"):
 
             # Save the resized image
             cv2.imwrite(output_path, resized_img)
-            print(f"Resized and saved: {image_file} to {output_path}")
 
         # Destroy the window to free resources
         cv2.destroyAllWindows()
