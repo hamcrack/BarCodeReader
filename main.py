@@ -4,6 +4,7 @@ import time
 from pyzbar.pyzbar import decode
 import numpy as np
 import math
+from collections import defaultdict
 
 def get_line_stats(lines, image):
     angle_threshold = 15
@@ -90,6 +91,100 @@ def get_barcode_lines(image):
                     barcode_lines.append(cv_lines[index])
     return barcode_lines
 
+def get_random_color():
+    """
+    Generates a random color in BGR format.
+
+    Returns:
+        tuple: A tuple representing a random color in BGR format (B, G, R).
+    """
+    return (np.random.randint(0, 256), np.random.randint(0, 256), np.random.randint(0, 256))
+
+def group_nearby_points(points_with_dist_angle, min_angle):
+    """
+    Groups points based on proximity and angle, where each point has its own
+    maximum distance and a normalized angle. Two points are neighbors if their
+    squared Euclidean distance is within the maximum of their max_dist values
+    AND the absolute difference between their normalized angles is within min_angle.
+
+    Args:
+        points_with_dist_angle: A list of lists, where each inner list is
+                                 [ [x, y], max_dist, normalized_angle_deg ].
+        min_angle: The minimum absolute difference in normalized angles (in degrees)
+                   for two points to be considered neighbors.
+
+    Returns:
+        A list of lists, where each inner list represents a group of nearby points
+        (each element in the inner list will be the [ [x, y], max_dist, normalized_angle_deg ] format).
+    """
+    if not points_with_dist_angle:
+        return []
+
+    # Determine a reasonable cell size based on the maximum potential max_dist
+    max_possible_max_dist = max(item[1] for item in points_with_dist_angle) if points_with_dist_angle else 0
+    cell_size = max_possible_max_dist
+
+    grid = defaultdict(list)
+    for i, ([x, y], max_d, angle) in enumerate(points_with_dist_angle):
+        cell_x = int(x // cell_size) if cell_size > 0 else 0
+        cell_y = int(y // cell_size) if cell_size > 0 else 0
+        grid[(cell_x, cell_y)].append(i)
+
+    n = len(points_with_dist_angle)
+    groups = []
+    visited = [False] * n
+
+    def squared_distance(p1_coords, p2_coords):
+        return (p1_coords[0] - p2_coords[0])**2 + (p1_coords[1] - p2_coords[1])**2
+    
+    def angle_difference_circular(angle1, angle2):
+        """Calculates the minimum difference between two angles in degrees (0-360 range)."""
+        diff = abs(angle1 - angle2)
+        return min(diff, 180 - diff)
+
+    def get_nearby_indices(point_index):
+        coords1, max_d1, angle1 = points_with_dist_angle[point_index]
+        x1, y1 = coords1
+        cell_x = int(x1 // cell_size) if cell_size > 0 else 0
+        cell_y = int(y1 // cell_size) if cell_size > 0 else 0
+        nearby_indices = []
+        max_relevant_dist_sq = max_d1**2 if max_d1 >= 0 else float('inf') # Ensure non-negative max_dist
+
+        for dx in range(-1, 2):
+            for dy in range(-1, 2):
+                neighbor_cell = (cell_x + dx, cell_y + dy)
+                if neighbor_cell in grid:
+                    for neighbor_index in grid[neighbor_cell]:
+                        if neighbor_index != point_index and not visited[neighbor_index]:
+                            coords2, max_d2, angle2 = points_with_dist_angle[neighbor_index]
+                            max_combined_dist_sq = max(max_relevant_dist_sq, max_d2**2 if max_d2 >= 0 else float('inf'))
+                            angle_diff = angle_difference_circular(angle1, angle2)
+                            length_diff = abs(max_d1 - max_d2)
+                            min_length = min(max_d1, max_d2) / 3
+                            if squared_distance(coords1, coords2) <= max_combined_dist_sq and angle_diff <= min_angle and length_diff <= min_length:
+                                nearby_indices.append(neighbor_index)
+        return nearby_indices
+
+    def find_connected_component(start_node):
+        component = []
+        queue = [start_node]
+        visited[start_node] = True
+        component.append(points_with_dist_angle[start_node])
+
+        while queue:
+            current_node = queue.pop(0)
+            for neighbor_index in get_nearby_indices(current_node):
+                if not visited[neighbor_index]:
+                    visited[neighbor_index] = True
+                    component.append(points_with_dist_angle[neighbor_index])
+                    queue.append(neighbor_index)
+        return component
+
+    for i in range(n):
+        if not visited[i]:
+            groups.append(find_connected_component(i))
+
+    return groups
 
 def detect_barcodes(image):
     """
@@ -117,28 +212,31 @@ def detect_barcodes(image):
     # My barcode detection
     barcode_lines = get_barcode_lines(gray)
     line_centers = []
-    line_associations = {i: [] for i in range(180)}
-    print("line", line_associations)
     
     for i, line in enumerate(barcode_lines):
         x1, y1, x2, y2 = line[0]
         center_point = (int((x1 + x2) / 2), int((y1 + y2) / 2))
-        for j, point in enumerate(line_centers):
-            distance = math.sqrt(math.pow(center_point[0] - point[0], 2) + math.pow(center_point[1] - point[1], 2))
-            angle_rad = math.degrees(math.atan2(center_point[1] - point[1], center_point[0] - point[0]))
-            angle_deg = math.degrees(angle_rad)
-            int_norm_angle = int(angle_deg % 180)
-            line_associations[int_norm_angle].append(i)
-            line_associations[int_norm_angle].append(j)
-            
-        line_centers.append(center_point)
-        cv2.line(image, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
-        cv2.circle(image, (line_centers[-1][0], line_centers[-1][1]), 5, (255, 0, 0), -1)
 
-    for i, associations in line_associations.items():
-        print(i, " = ", len(associations))
-    most_seen_angs = max(line_associations, key=lambda key: len(line_associations[key]))
-    print("Most seen angle:", most_seen_angs, "line_associations[most_seen_angs]:", line_associations[most_seen_angs])
+        max_dist = math.sqrt(math.pow(x1 - x2, 2) + math.pow(y1 - y2, 2)) / 2
+
+        opposite = (x1 - x2)
+        adjacent = (y1 - y2)
+        if adjacent == 0:
+            adjacent = 0.00001
+        angle_rad = math.atan(opposite / adjacent)
+        angle_deg = math.degrees(angle_rad)
+        normalized_angle = angle_deg % 180
+
+        line_centers.append([center_point, max_dist, normalized_angle])
+        cv2.line(image, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
+
+    grouped_points = group_nearby_points(line_centers, 2)
+    for group in grouped_points:
+        if len(group) > 20:
+            print("Group size:", len(group))    
+            colour = get_random_color()
+            for i, point in enumerate(group):
+                cv2.circle(image, (point[0][0], point[0][1]), 5, colour, -1)
     
     # Detect the barcodes
     retv, barcode_corners = barcode_detector.detect(gray)
